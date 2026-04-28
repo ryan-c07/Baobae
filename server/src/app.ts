@@ -203,52 +203,30 @@ async function writeSheetActiveCharacterIds(ids: string[]) {
 
 async function readResponses() {
   if (sheetsConfigured()) {
-    try {
-      return await readSheetResponses();
-    } catch (error) {
-      console.error("google sheets read responses failed, falling back to local files", error);
-    }
+    return readSheetResponses();
   }
   return readLocalResponses();
 }
 
 async function appendResponse(entry: StoredResponse) {
   if (sheetsConfigured()) {
-    try {
-      await appendSheetResponse(entry);
-      return;
-    } catch (error) {
-      console.error("google sheets append failed, falling back to local files", error);
-    }
+    await appendSheetResponse(entry);
+    return;
   }
   appendLocalResponse(entry);
 }
 
 async function readActiveCharacterIds() {
   if (sheetsConfigured()) {
-    try {
-      return await readSheetActiveCharacterIds();
-    } catch (error) {
-      console.error(
-        "google sheets read active characters failed, falling back to local files",
-        error
-      );
-    }
+    return readSheetActiveCharacterIds();
   }
   return readLocalActiveCharacterIds();
 }
 
 async function writeActiveCharacterIds(ids: string[]) {
   if (sheetsConfigured()) {
-    try {
-      await writeSheetActiveCharacterIds(ids);
-      return;
-    } catch (error) {
-      console.error(
-        "google sheets write active characters failed, falling back to local files",
-        error
-      );
-    }
+    await writeSheetActiveCharacterIds(ids);
+    return;
   }
   writeLocalActiveCharacterIds(ids);
 }
