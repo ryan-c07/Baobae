@@ -24,6 +24,7 @@ const GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY =
   process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n") ?? "";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "";
 const DEFAULT_CHARACTER_IDS = ["atlas", "milo", "kai", "noah"];
+const RUNNING_ON_VERCEL = process.env.VERCEL === "1";
 
 type StoredResponse = {
   id: string;
@@ -38,6 +39,11 @@ type StoredResponse = {
 };
 
 function ensureLocalDataFiles() {
+  if (RUNNING_ON_VERCEL) {
+    throw new Error(
+      "Local file persistence is disabled on Vercel. Configure Google Sheets env vars."
+    );
+  }
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -49,6 +55,14 @@ function ensureLocalDataFiles() {
       CHARACTERS_FILE,
       `${JSON.stringify({ activeCharacterIds: DEFAULT_CHARACTER_IDS }, null, 2)}\n`,
       "utf8"
+    );
+  }
+}
+
+function assertSheetsOnVercel() {
+  if (RUNNING_ON_VERCEL && !sheetsConfigured()) {
+    throw new Error(
+      "Google Sheets is required on Vercel. Missing one or more GOOGLE_SHEETS_* or service account env vars."
     );
   }
 }
@@ -202,6 +216,7 @@ async function writeSheetActiveCharacterIds(ids: string[]) {
 }
 
 async function readResponses() {
+  assertSheetsOnVercel();
   if (sheetsConfigured()) {
     return readSheetResponses();
   }
@@ -209,6 +224,7 @@ async function readResponses() {
 }
 
 async function appendResponse(entry: StoredResponse) {
+  assertSheetsOnVercel();
   if (sheetsConfigured()) {
     await appendSheetResponse(entry);
     return;
@@ -217,6 +233,7 @@ async function appendResponse(entry: StoredResponse) {
 }
 
 async function readActiveCharacterIds() {
+  assertSheetsOnVercel();
   if (sheetsConfigured()) {
     return readSheetActiveCharacterIds();
   }
@@ -224,6 +241,7 @@ async function readActiveCharacterIds() {
 }
 
 async function writeActiveCharacterIds(ids: string[]) {
+  assertSheetsOnVercel();
   if (sheetsConfigured()) {
     await writeSheetActiveCharacterIds(ids);
     return;
@@ -261,24 +279,45 @@ app.use(
 app.use(express.json({ limit: "12mb" }));
 
 app.get("/api/health", (_req, res) => {
+  const sheetsReady = sheetsConfigured();
   res.json({
     ok: true,
     googleConfigured: Boolean(GOOGLE_CLIENT_ID),
-    persistence: sheetsConfigured() ? "google-sheets" : "local-files",
+    persistence:
+      RUNNING_ON_VERCEL && !sheetsReady
+        ? "misconfigured-google-sheets-required"
+        : sheetsReady
+          ? "google-sheets"
+          : "local-files",
   });
 });
 
 app.get("/api/responses/count", async (_req, res) => {
-  res.json({ count: (await readResponses()).length });
+  try {
+    res.json({ count: (await readResponses()).length });
+  } catch (error) {
+    console.error("responses/count failed", error);
+    res.status(500).json({ error: "Failed to read responses from persistence layer." });
+  }
 });
 
 app.get("/api/characters", async (_req, res) => {
-  res.json({ activeCharacterIds: await readActiveCharacterIds() });
+  try {
+    res.json({ activeCharacterIds: await readActiveCharacterIds() });
+  } catch (error) {
+    console.error("characters read failed", error);
+    res.status(500).json({ error: "Failed to read active characters from persistence layer." });
+  }
 });
 
 app.get("/api/admin/characters", async (req, res) => {
   if (!requireAdminToken(req, res)) return;
-  res.json({ activeCharacterIds: await readActiveCharacterIds() });
+  try {
+    res.json({ activeCharacterIds: await readActiveCharacterIds() });
+  } catch (error) {
+    console.error("admin characters read failed", error);
+    res.status(500).json({ error: "Failed to read active characters from persistence layer." });
+  }
 });
 
 app.put("/api/admin/characters", async (req, res) => {
@@ -294,7 +333,10 @@ app.put("/api/admin/characters", async (req, res) => {
     );
     res.json({ ok: true, activeCharacterIds: await readActiveCharacterIds() });
   } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : "Update failed" });
+    console.error("admin characters write failed", error);
+    res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Failed to update characters." });
   }
 });
 
@@ -317,42 +359,65 @@ app.post("/api/submit", async (req, res) => {
     return;
   }
 
+  let payload:
+    | {
+        email?: string | null;
+        name?: string | null;
+        picture?: string | null;
+        sub?: string;
+      }
+    | undefined;
   try {
     const client = new OAuth2Client(GOOGLE_CLIENT_ID);
     const ticket = await client.verifyIdToken({
       idToken,
       audience: GOOGLE_CLIENT_ID,
     });
-    const payload = ticket.getPayload();
-    if (!payload) {
-      res.status(401).json({ error: "Invalid token payload" });
-      return;
-    }
+    payload = ticket.getPayload();
+  } catch (error) {
+    console.error("token verification failed", error);
+    res.status(401).json({ error: "Google token verification failed" });
+    return;
+  }
+  if (!payload) {
+    res.status(401).json({ error: "Invalid token payload" });
+    return;
+  }
+  try {
     if (await hasSubmittedAlready(payload.sub)) {
       res.status(409).json({ error: "This Google account has already submitted." });
       return;
     }
+  } catch (error) {
+    console.error("duplicate-check failed", error);
+    res.status(500).json({ error: "Failed to check prior submissions." });
+    return;
+  }
 
-    const entry: StoredResponse = {
-      id: randomUUID(),
-      receivedAt: new Date().toISOString(),
-      user: {
-        email: payload.email,
-        name: payload.name,
-        picture: payload.picture,
-        sub: payload.sub,
-      },
-      answers,
-    };
-
+  const entry: StoredResponse = {
+    id: randomUUID(),
+    receivedAt: new Date().toISOString(),
+    user: {
+      email: payload.email ?? undefined,
+      name: payload.name ?? undefined,
+      picture: payload.picture ?? undefined,
+      sub: payload.sub,
+    },
+    answers,
+  };
+  try {
     await appendResponse(entry);
     res.json({ ok: true, id: entry.id });
   } catch (error) {
-    console.error("verify/submit failed", error);
-    res.status(401).json({ error: "Google token verification failed" });
+    console.error("submit persistence failed", error);
+    res.status(500).json({ error: "Failed to save vote to persistence layer." });
   }
 });
 
 if (!sheetsConfigured()) {
-  ensureLocalDataFiles();
+  try {
+    ensureLocalDataFiles();
+  } catch (error) {
+    console.error("persistence bootstrap warning", error);
+  }
 }
