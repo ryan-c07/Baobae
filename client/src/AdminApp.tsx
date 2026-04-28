@@ -19,7 +19,10 @@ export default function AdminApp() {
   const activeSet = useMemo(() => new Set(activeIds), [activeIds]);
 
   async function loadActiveCharacters() {
-    const res = await fetch("/api/characters");
+    const endpoint = hasToken ? "/api/admin/characters" : "/api/characters";
+    const res = await fetch(endpoint, {
+      headers: hasToken ? { "x-admin-token": adminToken.trim() } : undefined,
+    });
     if (!res.ok) return;
     const data = (await res.json()) as CharactersResponse;
     setActiveIds(Array.isArray(data.activeCharacterIds) ? data.activeCharacterIds : []);
