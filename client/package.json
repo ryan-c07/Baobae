@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "npx tsc && vite build",
-    "preview": "vite preview"
+  "dev": "vite",
+  "build": "npx tsc && vite build",
+  "preview": "vite preview"
   },
   "dependencies": {
     "@react-oauth/google": "^0.12.1",
